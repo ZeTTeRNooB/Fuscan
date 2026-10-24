@@ -9,6 +9,8 @@ from Fuscan_pre import *
 from loguru import logger
 import time
 
+BWA = "/home/genetics/data-drive/soft/bwa-mem2-2.3_x64-linux/bwa-mem2"
+
 __author__ = "Zhaoying Liu"
 __version__ = "1.2.0"
 __date__ = "2026-04-10"
@@ -461,8 +463,8 @@ def filter_targeted_bam(out_dir, targeted_name, threads, fasta, homo_list ,targe
                 split_end = split_start + out_cigar[4]
             cigar_str = "".join([str(num) + {0:"M",4:"S"}[op] for op, num in out_cigar.items()])
             f1.write(f'>{read.qname};{cigar_str};{split_start};{split_end};{read.cigarstring};{read.mapq}\n{split_seq}\n')
-    os.system(f"bwa mem -t {threads} {fasta} {tmp_fa1} 2>{os.devnull} | samtools view -buS -F 260 | samtools sort -o {split_reads_reference_bam}")
-    os.system(f"bwa mem -t {threads} {fasta} {tmp_fa2} 2>{os.devnull} | samtools view -buS -F 260 | samtools sort -o {discordant_reads_reference_bam}")
+    os.system(f"{BWA} mem -t {threads} {fasta} {tmp_fa1} 2>{os.devnull} | samtools view -buS -F 260 | samtools sort -o {split_reads_reference_bam}")
+    os.system(f"{BWA} mem -t {threads} {fasta} {tmp_fa2} 2>{os.devnull} | samtools view -buS -F 260 | samtools sort -o {discordant_reads_reference_bam}")
     os.system(f"samtools index {split_reads_reference_bam}")
     os.system(f"samtools index {discordant_reads_reference_bam}")
     os.remove(tmp_fa1)
@@ -495,18 +497,18 @@ def targeted_fusion(key):
     with open(targeted_fasta, "w") as f:
         f.write(f">{targeted_info}\n{seq}\n")
     logger.info(f"[Pid: {os.getpid()}] Processing: BWA indexing for {targeted_info}...")     
-    os.system(f"bwa index {targeted_fasta} > {os.devnull} 2>&1")
+    os.system(f"{BWA} index {targeted_fasta} > {os.devnull} 2>&1")
     
-    # Index reference sequence
-    if os.path.exists(args.FASTA + ".bwt") and os.path.exists(args.FASTA + ".pac") and os.path.exists(args.FASTA + ".amb") and os.path.exists(args.FASTA + ".ann") and os.path.exists(args.FASTA + ".sa"):
+    # Index reference sequence (bwa-mem2)
+    if os.path.exists(args.FASTA + ".bwt.2bit.64") and os.path.exists(args.FASTA + ".0123") and os.path.exists(args.FASTA + ".pac") and os.path.exists(args.FASTA + ".amb") and os.path.exists(args.FASTA + ".ann"):
         pass
     else:
-        logger.warning(f"[Pid: {os.getpid()}] BWA index of reference sequence not found, generating index...")
-        os.system(f"bwa index {args.FASTA} > {os.devnull} 2>&1")
+        logger.warning(f"[Pid: {os.getpid()}] BWA-MEM2 index of reference sequence not found, generating index...")
+        os.system(f"{BWA} index {args.FASTA} > {os.devnull} 2>&1")
     logger.info(f"[Pid: {os.getpid()}] Processing: Mapping reads to targeted regions...")
     
     # Align reads to targeted regions
-    os.system(f"bwa mem -k 25 -c 1000 -D 0.9 -m 10 -t {each_thread} -B 13 -O [18,18] {targeted_fasta} {tmp_R1} {tmp_R2} 2>{os.devnull} | samtools view -buS -F 256 | samtools sort -@ {each_thread} -o {targeted_bam}")
+    os.system(f"{BWA} mem -k 25 -c 1000 -D 0.9 -m 10 -t {each_thread} -B 13 -O [18,18] {targeted_fasta} {tmp_R1} {tmp_R2} 2>{os.devnull} | samtools view -buS -F 256 | samtools sort -@ {each_thread} -o {targeted_bam}")
     os.system(f"samtools index {targeted_bam}")
     # Filtering for targeted.bam
     split_reads_dict, discordant_reads_dict = filter_targeted_bam(args.OUTDIR, targeted_name, each_thread, args.FASTA, Homo_list, targeted_bam)
@@ -629,7 +631,8 @@ def annotate_fusion(key):
     snpeff_dir = os.path.join(os.path.dirname(sys.argv[0]),"../snpeff")
     snpeff_java = os.path.join(snpeff_dir,"snpEff.jar")
     snpeff_config = os.path.join(snpeff_dir,"snpEff.config")
-    os.system(f"java -jar {snpeff_java} closest -canon -c {snpeff_config} hg19 {tmp_vcf} > {tmp_anno_vcf} 2>{os.devnull}")
+    # ponytail: panel/ref are hg38; stock Fuscan defaults to hg19 SnpEff
+    os.system(f"java -jar {snpeff_java} closest -canon -c {snpeff_config} hg38 {tmp_vcf} > {tmp_anno_vcf} 2>{os.devnull}")
     
     i = 0
     with open(output_file, "w") as f:
@@ -877,6 +880,9 @@ def results_summary(out_dir, background_dict, fusion_pair_dict):
                 continue
             if split == 1 and discordant < 5:
                 continue
+            # default order if gene strand unknown / missing from -td
+            fusion = f"{targeted_gene}({targeted_rank})-{ref_gene}({ref_rank})"
+            line = "\t".join([fusion,str(af),targeted_chr,str(targeted_breakpoint_pos),targeted_gene,targeted_rank,ref_chr,str(ref_breakpoint_pos),ref_gene,ref_rank,str(split),str(discordant),str(imporper_ratio),background,direction if direction in ("left","right") else "direction_unknown"])
             if targeted_gene in transcript_dict:
                 if transcript_dict[targeted_gene] == "5>3":
                     if direction == "left":
@@ -970,7 +976,8 @@ if __name__ == '__main__':
     tmp_ref_bam = os.path.join(args.OUTDIR, "tmp.ref.bam")
     tmp_ref_bam_sorted = os.path.join(args.OUTDIR, "tmp.ref.sorted.bam")
     if is_fq:
-        os.system(f"bwa mem -t {args.THREADS} {args.FASTA} {args.R1} {args.R2} 2>>{os.path.join(args.OUTDIR, "processing.log")} | samtools sort - -@ {args.THREADS} -n -o {tmp_ref_bam}")
+        processing_log = os.path.join(args.OUTDIR, "processing.log")
+        os.system(f"{BWA} mem -t {args.THREADS} {args.FASTA} {args.R1} {args.R2} 2>>{processing_log} | samtools sort - -@ {args.THREADS} -n -o {tmp_ref_bam}")
     else:
         os.system(f"samtools sort -@ {args.THREADS} -n {args.BAM} -o {tmp_ref_bam}")
     logger.info("Processing: Mapping reads finished.")
