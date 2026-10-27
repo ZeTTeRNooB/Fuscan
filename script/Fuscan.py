@@ -291,7 +291,9 @@ def cigar_count_len(cigar_str):
 def split_reads_process(split_reads_reference_bam, targeted_ref_chr, targeted_ref_start, targeted_ref_end):
     split_reads_dict = {}
     logger.info(f"[Pid: {os.getpid()}] Processing: Extracting split reads...")
-    for read in pysam.AlignmentFile(split_reads_reference_bam, "rb"):
+    # check_sq=False: for targets with no split reads BWA produces a header-only
+    # BAM without @SQ; pysam would otherwise raise "file has no sequences defined".
+    for read in pysam.AlignmentFile(split_reads_reference_bam, "rb", check_sq=False):
         if read.is_unmapped:
             continue
         if read.mapq < 1:
@@ -377,7 +379,7 @@ def discordant_reads_process(discordant_reads_reference_bam, targeted_ref_chr, t
     discordant_reads_dict = {}
     logger.info(f"[Pid: {os.getpid()}] Processing: Extracting discordant reads...")
     uniq_set = set()
-    for read in pysam.AlignmentFile(discordant_reads_reference_bam, "rb"):
+    for read in pysam.AlignmentFile(discordant_reads_reference_bam, "rb", check_sq=False):
         if read.is_unmapped:
             continue
         if read.mapq < 30: 
@@ -1009,7 +1011,10 @@ if __name__ == '__main__':
     tmp_R2 = os.path.join(args.OUTDIR, "tmp.R2.fq")
 
     # Run targeted fusion detection
-    each_thread = int(args.THREADS) // len(Homo_dict.keys())
+    # Keep at least one thread per target. With fewer requested threads than
+    # targets, zero makes bwa-mem2 interpret -t 0 as "use all cores" for every
+    # worker and can exhaust host memory.
+    each_thread = max(1, int(args.THREADS) // len(Homo_dict.keys()))
     pool = Pool(int(args.THREADS))
     pool.map(write_reads_name, save_set)
     pool.map(filter_reads, ["R1", "R2", "sort"])
